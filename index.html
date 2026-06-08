@@ -1,0 +1,1438 @@
+<!DOCTYPE html>
+<html lang="fr"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes"><title>PWA App</title><link rel="manifest" href="manifest.json"><script src="https://cdn.tailwindcss.com"></script><style>body{margin:0;padding:0;background-color:#030712;font-family:system-ui;min-height:100vh;display:flex;align-items:center;justify-content:center;}#root{width:100%;display:flex;justify-content:center;align-items:center;}</style></head><body><div id="root"></div><script src="https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.production.min.js"></script><script src="https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.production.min.js"></script><script>// Composant monolithique LB Reaactor - Mode Père Seul (toggle switch)
+// Toggle discret, descriptions contextuelles, notifications temporaires
+
+const {
+  useState,
+  useEffect,
+  useCallback,
+  useRef
+} = React;
+const GenoGraph = () => {
+  const [selectedNodeId, setSelectedNodeId] = useState(null);
+  const [deleteMode, setDeleteMode] = useState(false);
+  const [currentSection, setCurrentSection] = useState('section-default');
+  const [historyUndo, setHistoryUndo] = useState([]);
+  const [historyRedo, setHistoryRedo] = useState([]);
+  const [libsReady, setLibsReady] = useState(false);
+  const [editingName, setEditingName] = useState('');
+  const [singleParentMode, setSingleParentMode] = useState(false);
+  const [showChildGenderPicker, setShowChildGenderPicker] = useState(false);
+  const [pendingParentId, setPendingParentId] = useState(null);
+  const [notification, setNotification] = useState({
+    show: false,
+    message: '',
+    type: ''
+  });
+  const nodesRef = useRef(null);
+  const edgesRef = useRef(null);
+  const networkRef = useRef(null);
+  const containerRef = useRef(null);
+  const deleteModeRef = useRef(deleteMode);
+  const debounceTimerRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const notificationTimerRef = useRef(null);
+  useEffect(() => {
+    deleteModeRef.current = deleteMode;
+  }, [deleteMode]);
+
+  // Fonction pour afficher une notification temporaire
+  const showNotification = (message, type = 'info') => {
+    if (notificationTimerRef.current) clearTimeout(notificationTimerRef.current);
+    setNotification({
+      show: true,
+      message,
+      type
+    });
+    notificationTimerRef.current = setTimeout(() => {
+      setNotification({
+        show: false,
+        message: '',
+        type: ''
+      });
+    }, 3000);
+  };
+  const getInputValue = (id, defaultValue = '') => document.getElementById(id)?.value || defaultValue;
+  const setInputValue = (id, value) => {
+    const el = document.getElementById(id);
+    if (el) el.value = value;
+  };
+  const saveToLocalStorage = useCallback(() => {
+    if (nodesRef.current && edgesRef.current) {
+      const data = {
+        nodes: nodesRef.current.get(),
+        edges: edgesRef.current.get()
+      };
+      localStorage.setItem('genograph_persistent_backup', JSON.stringify(data));
+    }
+  }, []);
+  const saveState = useCallback(() => {
+    if (nodesRef.current && edgesRef.current) {
+      setHistoryUndo(prev => [...prev, {
+        nodes: nodesRef.current.get(),
+        edges: edgesRef.current.get()
+      }]);
+      setHistoryRedo([]);
+    }
+  }, []);
+  const cancelAction = useCallback(() => {
+    setSelectedNodeId(null);
+    setShowChildGenderPicker(false);
+    setPendingParentId(null);
+    setCurrentSection(!nodesRef.current || nodesRef.current.get().length === 0 ? 'section-default' : 'section-idle');
+  }, []);
+  const undo = useCallback(() => {
+    if (historyUndo.length === 0) return;
+    const prevState = historyUndo[historyUndo.length - 1];
+    setHistoryRedo(prev => [...prev, {
+      nodes: nodesRef.current.get(),
+      edges: edgesRef.current.get()
+    }]);
+    setHistoryUndo(prev => prev.slice(0, -1));
+    nodesRef.current.clear();
+    edgesRef.current.clear();
+    nodesRef.current.add(prevState.nodes);
+    edgesRef.current.add(prevState.edges);
+    saveToLocalStorage();
+    cancelAction();
+    updateNodeStyles();
+    showNotification('Annulation effectuée', 'success');
+  }, [historyUndo, saveToLocalStorage, cancelAction]);
+  const redo = useCallback(() => {
+    if (historyRedo.length === 0) return;
+    const nextState = historyRedo[historyRedo.length - 1];
+    setHistoryRedo(prev => prev.slice(0, -1));
+    setHistoryUndo(prev => [...prev, {
+      nodes: nodesRef.current.get(),
+      edges: edgesRef.current.get()
+    }]);
+    nodesRef.current.clear();
+    edgesRef.current.clear();
+    nodesRef.current.add(nextState.nodes);
+    edgesRef.current.add(nextState.edges);
+    saveToLocalStorage();
+    cancelAction();
+    updateNodeStyles();
+    showNotification('Rétablissement effectué', 'success');
+  }, [historyRedo, saveToLocalStorage, cancelAction]);
+
+  // Mise à jour des couleurs des femmes : rose si a au moins un parent, jaune sinon
+  const updateNodeStyles = useCallback(() => {
+    if (!nodesRef.current || !edgesRef.current) return;
+    const nodes = nodesRef.current.get();
+    const edges = edgesRef.current.get();
+    nodes.forEach(node => {
+      if (node.shape === 'box' && node.gender === 'F') {
+        const hasParent = edges.some(edge => edge.to === node.id);
+        const newColor = hasParent ? {
+          background: '#701a75',
+          border: '#ec4899'
+        } : {
+          background: '#eab308',
+          border: '#ca8a04'
+        };
+        const currentColor = node.color;
+        if (currentColor.background !== newColor.background) {
+          nodesRef.current.update({
+            id: node.id,
+            color: newColor
+          });
+        }
+      }
+    });
+  }, []);
+  const clearAll = useCallback(() => {
+    if (!nodesRef.current || !edgesRef.current) return;
+    if (nodesRef.current.get().length === 0 && edgesRef.current.get().length === 0) return;
+    if (window.confirm("Effacer tout le graphe ?")) {
+      saveState();
+      nodesRef.current.clear();
+      edgesRef.current.clear();
+      saveToLocalStorage();
+      cancelAction();
+      updateNodeStyles();
+      showNotification('Graphe entièrement effacé', 'warning');
+    }
+  }, [saveState, saveToLocalStorage, cancelAction, updateNodeStyles]);
+  const importFromFile = useCallback(event => {
+    const file = event.target.files[0];
+    if (!file) return;
+    if (!window.confirm("Importer un fichier remplacera tout le graphe actuel. Continuer ?")) {
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = e => {
+      try {
+        const data = JSON.parse(e.target.result);
+        if (!data.nodes || !data.edges) throw new Error("Format invalide");
+        nodesRef.current.clear();
+        edgesRef.current.clear();
+        setHistoryUndo([]);
+        setHistoryRedo([]);
+        data.nodes.forEach(node => {
+          if (node.shape === 'box' && !node.gender) {
+            if (node.color && node.color.background === '#1e3a8a') node.gender = 'M';else if (node.color && node.color.background === '#701a75') node.gender = 'F';else node.gender = 'M';
+          }
+        });
+        nodesRef.current.add(data.nodes);
+        edgesRef.current.add(data.edges);
+        saveToLocalStorage();
+        cancelAction();
+        if (networkRef.current) networkRef.current.fit();
+        updateNodeStyles();
+        showNotification('Import réussi !', 'success');
+      } catch (err) {
+        alert("Erreur lors de l'import : " + err.message);
+      } finally {
+        if (fileInputRef.current) fileInputRef.current.value = '';
+      }
+    };
+    reader.readAsText(file);
+  }, [saveToLocalStorage, cancelAction, updateNodeStyles]);
+  const saveCurrentPositions = useCallback(() => {
+    if (networkRef.current && nodesRef.current) {
+      const positions = networkRef.current.getPositions();
+      nodesRef.current.forEach(node => {
+        if (positions[node.id]) nodesRef.current.update({
+          id: node.id,
+          x: positions[node.id].x,
+          y: positions[node.id].y
+        });
+      });
+    }
+  }, []);
+  const createPersonNode = useCallback((id, label, gender, x, y) => {
+    const color = gender === 'M' ? {
+      background: '#1e3a8a',
+      border: '#3b82f6'
+    } : {
+      background: '#701a75',
+      border: '#ec4899'
+    };
+    nodesRef.current.add({
+      id,
+      label,
+      shape: 'box',
+      x,
+      y,
+      color,
+      font: {
+        color: '#fff',
+        face: 'Tajawal'
+      },
+      gender
+    });
+  }, []);
+  const createUnionNode = useCallback((id, x, y) => {
+    nodesRef.current.add({
+      id,
+      label: '',
+      shape: 'dot',
+      size: 7,
+      color: '#10b981',
+      x,
+      y,
+      font: {
+        face: 'Tajawal'
+      }
+    });
+  }, []);
+  const createRootPerson = useCallback(() => {
+    const name = getInputValue('init-name', 'Laiche Brahim');
+    const gender = getInputValue('init-gender', 'M');
+    const id = 'p_' + Date.now();
+    saveState();
+    createPersonNode(id, name, gender, 0, 0);
+    saveToLocalStorage();
+    setInputValue('init-name', '');
+    cancelAction();
+    updateNodeStyles();
+    showNotification(`Personne "${name}" créée`, 'success');
+  }, [saveState, createPersonNode, saveToLocalStorage, cancelAction, updateNodeStyles]);
+
+  // --- Mode normal : conjoint via union ---
+  const prepareAddUnion = () => setCurrentSection('section-add-union');
+  const executeAddUnion = useCallback(() => {
+    if (!selectedNodeId) return;
+    const spouseName = getInputValue('spouse-name', 'Conjoint');
+    const spouseGender = getInputValue('spouse-gender', 'F');
+    const spouseId = 'p_' + Date.now();
+    const unionId = 'u_' + Date.now();
+    saveCurrentPositions();
+    saveState();
+    const positions = networkRef.current?.getPositions() || {};
+    const pPos = positions[selectedNodeId] || {
+      x: 0,
+      y: 0
+    };
+    const spouseX = pPos.x + 160,
+      spouseY = pPos.y;
+    const unionX = pPos.x + 80,
+      unionY = pPos.y + 45;
+    createPersonNode(spouseId, spouseName, spouseGender, spouseX, spouseY);
+    createUnionNode(unionId, unionX, unionY);
+    edgesRef.current.add([{
+      from: selectedNodeId,
+      to: unionId
+    }, {
+      from: spouseId,
+      to: unionId
+    }]);
+    saveToLocalStorage();
+    setInputValue('spouse-name', '');
+    cancelAction();
+    updateNodeStyles();
+    showNotification(`Conjoint(e) "${spouseName}" ajouté(e)`, 'success');
+  }, [selectedNodeId, saveCurrentPositions, saveState, createPersonNode, createUnionNode, saveToLocalStorage, cancelAction, updateNodeStyles]);
+
+  // --- Mode Père Seul : ajout enfant avec sélection rapide ---
+  const requestChildCreation = useCallback(() => {
+    if (!selectedNodeId) return;
+    setPendingParentId(selectedNodeId);
+    setShowChildGenderPicker(true);
+  }, [selectedNodeId]);
+  const createChildWithGender = useCallback(gender => {
+    if (!pendingParentId) return;
+    const defaultName = gender === 'M' ? 'Fils' : 'Fille';
+    const childId = 'p_' + Date.now();
+    saveCurrentPositions();
+    saveState();
+    const positions = networkRef.current?.getPositions() || {};
+    const parentPos = positions[pendingParentId] || {
+      x: 0,
+      y: 0
+    };
+    const existingChildren = edgesRef.current.get({
+      filter: item => item.from === pendingParentId && item.to !== undefined
+    });
+    let offsetX = 0;
+    if (existingChildren.length) {
+      const step = 160;
+      const sign = existingChildren.length % 2 === 1 ? 1 : -1;
+      const multiplier = Math.ceil(existingChildren.length / 2);
+      offsetX = sign * multiplier * step;
+    }
+    const childX = parentPos.x + offsetX,
+      childY = parentPos.y + 80;
+    createPersonNode(childId, defaultName, gender, childX, childY);
+    edgesRef.current.add({
+      from: pendingParentId,
+      to: childId,
+      arrows: 'to'
+    });
+    saveToLocalStorage();
+    cancelAction();
+    updateNodeStyles();
+    setShowChildGenderPicker(false);
+    setPendingParentId(null);
+    showNotification(`Enfant "${defaultName}" ajouté`, 'success');
+  }, [pendingParentId, saveCurrentPositions, saveState, createPersonNode, saveToLocalStorage, cancelAction, updateNodeStyles]);
+
+  // --- Mode normal : parents (père + mère + union) ---
+  const executeAddParents = useCallback(() => {
+    if (!selectedNodeId) return;
+    saveCurrentPositions();
+    saveState();
+    const positions = networkRef.current?.getPositions() || {};
+    const childPos = positions[selectedNodeId] || {
+      x: 0,
+      y: 0
+    };
+    const fatherId = 'p_f_' + Date.now();
+    const motherId = 'p_m_' + Date.now();
+    const unionId = 'u_p_' + Date.now();
+    const unionX = childPos.x,
+      unionY = childPos.y - 55;
+    const fatherX = childPos.x - 80,
+      fatherY = childPos.y - 100;
+    const motherX = childPos.x + 80,
+      motherY = childPos.y - 100;
+    createPersonNode(fatherId, 'Père', 'M', fatherX, fatherY);
+    createPersonNode(motherId, 'Mère', 'F', motherX, motherY);
+    createUnionNode(unionId, unionX, unionY);
+    edgesRef.current.add([{
+      from: fatherId,
+      to: unionId
+    }, {
+      from: motherId,
+      to: unionId
+    }, {
+      from: unionId,
+      to: selectedNodeId,
+      arrows: 'to'
+    }]);
+    saveToLocalStorage();
+    cancelAction();
+    updateNodeStyles();
+    showNotification('Parents ajoutés (père + mère)', 'success');
+  }, [selectedNodeId, saveCurrentPositions, saveState, createPersonNode, createUnionNode, saveToLocalStorage, cancelAction, updateNodeStyles]);
+
+  // --- Mode Père Seul : ajout direct du père (sans mère ni union) ---
+  const executeAddSingleParent = useCallback(() => {
+    if (!selectedNodeId) return;
+    const fatherName = getInputValue('father-name', 'Père');
+    const fatherGender = 'M';
+    const fatherId = 'p_f_' + Date.now();
+    saveCurrentPositions();
+    saveState();
+    const positions = networkRef.current?.getPositions() || {};
+    const childPos = positions[selectedNodeId] || {
+      x: 0,
+      y: 0
+    };
+    const fatherX = childPos.x - 80,
+      fatherY = childPos.y - 100;
+    createPersonNode(fatherId, fatherName, fatherGender, fatherX, fatherY);
+    edgesRef.current.add({
+      from: fatherId,
+      to: selectedNodeId,
+      arrows: 'to'
+    });
+    saveToLocalStorage();
+    cancelAction();
+    updateNodeStyles();
+    showNotification(`Père "${fatherName}" ajouté`, 'success');
+  }, [selectedNodeId, saveCurrentPositions, saveState, createPersonNode, saveToLocalStorage, cancelAction, updateNodeStyles]);
+
+  // --- Mode normal : ajout d'enfant via union (formulaire) ---
+  const executeAddChild = useCallback(() => {
+    if (!selectedNodeId) return;
+    const childName = getInputValue('child-name', 'Nouvel Enfant');
+    const childGender = getInputValue('child-gender', 'M');
+    const childId = 'p_' + Date.now();
+    saveCurrentPositions();
+    saveState();
+    const positions = networkRef.current?.getPositions() || {};
+    const uPos = positions[selectedNodeId] || {
+      x: 0,
+      y: 0
+    };
+    const existingChildren = edgesRef.current.get({
+      filter: item => item.from === selectedNodeId
+    });
+    let offsetX = 0;
+    if (existingChildren.length) {
+      const step = 160;
+      const sign = existingChildren.length % 2 === 1 ? 1 : -1;
+      const multiplier = Math.ceil(existingChildren.length / 2);
+      offsetX = sign * multiplier * step;
+    }
+    const childX = uPos.x + offsetX,
+      childY = uPos.y + 55;
+    createPersonNode(childId, childName, childGender, childX, childY);
+    edgesRef.current.add({
+      from: selectedNodeId,
+      to: childId,
+      arrows: 'to'
+    });
+    saveToLocalStorage();
+    setInputValue('child-name', '');
+    cancelAction();
+    updateNodeStyles();
+    showNotification(`Enfant "${childName}" ajouté`, 'success');
+  }, [selectedNodeId, saveCurrentPositions, saveState, createPersonNode, saveToLocalStorage, cancelAction, updateNodeStyles]);
+  const updatePersonNameLive = useCallback(newName => {
+    if (!selectedNodeId) return;
+    nodesRef.current.update({
+      id: selectedNodeId,
+      label: newName
+    });
+    const titleEl = document.getElementById('person-title');
+    if (titleEl) titleEl.innerText = newName;
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    debounceTimerRef.current = setTimeout(() => {
+      saveToLocalStorage();
+      saveState();
+    }, 300);
+  }, [selectedNodeId, saveToLocalStorage, saveState]);
+  useEffect(() => {
+    if (selectedNodeId && nodesRef.current) {
+      const node = nodesRef.current.get(selectedNodeId);
+      setEditingName(node?.label || '');
+    } else {
+      setEditingName('');
+    }
+  }, [selectedNodeId]);
+  const exportToFile = useCallback(() => {
+    if (!nodesRef.current || !edgesRef.current) return alert("Application non prête");
+    const nodes = nodesRef.current.get();
+    const edges = edgesRef.current.get();
+    if (!nodes.length && !edges.length) return alert("Graphe vide");
+    if (!window.confirm("Exporter le graphe au format JSON ?")) return;
+    const data = {
+      nodes,
+      edges,
+      exportDate: new Date().toISOString()
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], {
+      type: 'application/json'
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `genograph_export_${Date.now()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, 150);
+    showNotification('Export JSON effectué', 'success');
+  }, []);
+  const toggleDeleteMode = useCallback(() => {
+    setDeleteMode(prev => !prev);
+    showNotification(deleteMode ? 'Mode Gomme désactivé' : 'Mode Gomme activé – cliquez sur un nœud pour le supprimer', 'info');
+  }, [deleteMode]);
+  const toggleSingleParentMode = useCallback(() => {
+    setSingleParentMode(prev => !prev);
+    setShowChildGenderPicker(false);
+    setPendingParentId(null);
+    showNotification(singleParentMode ? 'Mode normal : ajout de parents complets (père+mère) et conjoints avec union' : 'Mode Père Seul : ajout rapide d\'un père direct ou d\'un enfant (choix Fils/Fille)', 'info');
+  }, [singleParentMode]);
+
+  // Génération de données démo (identique à avant, avec notification)
+  const generateDemoData = useCallback(() => {
+    if (!nodesRef.current || !edgesRef.current) return;
+    if (nodesRef.current.get().length > 0 || edgesRef.current.get().length > 0) {
+      if (!window.confirm("Générer un exemple remplacera le graphe actuel. Continuer ?")) return;
+    }
+    saveState();
+    nodesRef.current.clear();
+    edgesRef.current.clear();
+    const addPerson = (id, label, gender, x, y) => {
+      const color = gender === 'M' ? {
+        background: '#1e3a8a',
+        border: '#3b82f6'
+      } : {
+        background: '#701a75',
+        border: '#ec4899'
+      };
+      nodesRef.current.add({
+        id,
+        label,
+        shape: 'box',
+        x,
+        y,
+        color,
+        font: {
+          color: '#fff',
+          face: 'Tajawal'
+        },
+        gender
+      });
+    };
+    const addUnion = (id, x, y) => {
+      nodesRef.current.add({
+        id,
+        label: '',
+        shape: 'dot',
+        size: 7,
+        color: '#10b981',
+        x,
+        y,
+        font: {
+          face: 'Tajawal'
+        }
+      });
+    };
+    addPerson('p1', 'Ahmed (Grand-père)', 'M', 0, -300);
+    addPerson('p2', 'Fatima (Grand-mère)', 'F', 0, -220);
+    addUnion('u1', 0, -260);
+    edgesRef.current.add([{
+      from: 'p1',
+      to: 'u1'
+    }, {
+      from: 'p2',
+      to: 'u1'
+    }]);
+    const children = [{
+      id: 'c1',
+      name: 'Mohamed (Oncle)',
+      gender: 'M',
+      x: -180,
+      y: -140
+    }, {
+      id: 'c2',
+      name: 'Khadija (Tante)',
+      gender: 'F',
+      x: 0,
+      y: -140
+    }, {
+      id: 'c3',
+      name: 'Ali (Père)',
+      gender: 'M',
+      x: 180,
+      y: -140
+    }];
+    children.forEach(child => addPerson(child.id, child.name, child.gender, child.x, child.y));
+    children.forEach(child => edgesRef.current.add({
+      from: 'u1',
+      to: child.id,
+      arrows: 'to'
+    }));
+    const spouseOf = {
+      c1: {
+        name: 'Aisha',
+        gender: 'F',
+        x: -180,
+        y: -60
+      },
+      c2: {
+        name: 'Youssef',
+        gender: 'M',
+        x: 0,
+        y: -60
+      },
+      c3: {
+        name: 'Zineb',
+        gender: 'F',
+        x: 180,
+        y: -60
+      }
+    };
+    for (let [childId, spouse] of Object.entries(spouseOf)) {
+      const spouseId = `sp_${childId}`;
+      const unionId = `u_${childId}`;
+      addPerson(spouseId, spouse.name, spouse.gender, spouse.x, spouse.y);
+      addUnion(unionId, spouse.x + 20, spouse.y - 30);
+      edgesRef.current.add([{
+        from: childId,
+        to: unionId
+      }, {
+        from: spouseId,
+        to: unionId
+      }]);
+    }
+    const generations = [{
+      parentId: 'c1',
+      offsetX: -180,
+      offsetY: 20,
+      childrenNames: ['Omar', 'Salma'],
+      genders: ['M', 'F']
+    }, {
+      parentId: 'c2',
+      offsetX: 0,
+      offsetY: 20,
+      childrenNames: ['Leila', 'Hassan'],
+      genders: ['F', 'M']
+    }, {
+      parentId: 'c3',
+      offsetX: 180,
+      offsetY: 20,
+      childrenNames: ['Yacine', 'Imane'],
+      genders: ['M', 'F']
+    }];
+    let childCounter = 0;
+    generations.forEach(gen => {
+      const baseX = gen.offsetX;
+      const baseY = gen.offsetY;
+      const stepX = 60;
+      gen.childrenNames.forEach((name, idx) => {
+        const childId = `gc_${childCounter++}`;
+        const childX = baseX + (idx === 0 ? -stepX : stepX);
+        const childY = baseY;
+        addPerson(childId, name, gen.genders[idx], childX, childY);
+        const unionId = `u_${gen.parentId}`;
+        edgesRef.current.add({
+          from: unionId,
+          to: childId,
+          arrows: 'to'
+        });
+      });
+    });
+    const additionalPeople = [{
+      label: 'Hamid (Frère)',
+      gender: 'M',
+      x: -280,
+      y: -140
+    }, {
+      label: 'Nadia (Sœur)',
+      gender: 'F',
+      x: -80,
+      y: -140
+    }, {
+      label: 'Rachid (Frère)',
+      gender: 'M',
+      x: 280,
+      y: -60
+    }, {
+      label: 'Samira (Cousine)',
+      gender: 'F',
+      x: -280,
+      y: 20
+    }, {
+      label: 'Karim (Cousin)',
+      gender: 'M',
+      x: 280,
+      y: 20
+    }, {
+      label: 'Malika (Grand-tante)',
+      gender: 'F',
+      x: -300,
+      y: -260
+    }, {
+      label: 'Tahar (Grand-oncle)',
+      gender: 'M',
+      x: 300,
+      y: -260
+    }];
+    additionalPeople.forEach((p, idx) => addPerson(`add_${idx}`, p.label, p.gender, p.x, p.y));
+    addUnion('u_add1', -280, -100);
+    edgesRef.current.add([{
+      from: 'add_0',
+      to: 'u_add1'
+    }, {
+      from: 'c1',
+      to: 'u_add1'
+    }]);
+    addUnion('u_add2', 280, -20);
+    edgesRef.current.add([{
+      from: 'add_2',
+      to: 'u_add2'
+    }, {
+      from: 'sp_c3',
+      to: 'u_add2'
+    }]);
+    saveToLocalStorage();
+    cancelAction();
+    if (networkRef.current) networkRef.current.fit({
+      animation: {
+        duration: 500
+      }
+    });
+    updateNodeStyles();
+    showNotification(`Exemple généré avec ${nodesRef.current.get().length} nœuds`, 'success');
+  }, [saveState, saveToLocalStorage, cancelAction, updateNodeStyles]);
+
+  // Chargement des librairies
+  useEffect(() => {
+    let tailwindLoaded = false,
+      visLoaded = false;
+    const checkReady = () => {
+      if (tailwindLoaded && visLoaded) setLibsReady(true);
+    };
+    if (!document.querySelector('link[href*="tailwindcss"]')) {
+      const link = document.createElement('link');
+      link.href = 'https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css';
+      link.rel = 'stylesheet';
+      link.onload = () => {
+        tailwindLoaded = true;
+        checkReady();
+      };
+      document.head.appendChild(link);
+    } else {
+      tailwindLoaded = true;
+      checkReady();
+    }
+    if (!window.vis) {
+      const script = document.createElement('script');
+      script.src = 'https://unpkg.com/vis-network/standalone/umd/vis-network.min.js';
+      script.onload = () => {
+        visLoaded = true;
+        checkReady();
+      };
+      document.head.appendChild(script);
+    } else {
+      visLoaded = true;
+      checkReady();
+    }
+    if (!document.getElementById('root')) {
+      const rootDiv = document.createElement('div');
+      rootDiv.id = 'root';
+      document.body.appendChild(rootDiv);
+    }
+  }, []);
+
+  // Initialisation réseau
+  useEffect(() => {
+    if (!libsReady || !window.vis) return;
+    nodesRef.current = new window.vis.DataSet([]);
+    edgesRef.current = new window.vis.DataSet([]);
+    const container = containerRef.current;
+    const data = {
+      nodes: nodesRef.current,
+      edges: edgesRef.current
+    };
+    const options = {
+      physics: {
+        enabled: false
+      },
+      edges: {
+        smooth: {
+          type: 'cubicBezier',
+          forceDirection: 'vertical',
+          roundness: 0.5
+        },
+        color: {
+          color: '#4a4a52',
+          highlight: '#10b981'
+        },
+        width: 2
+      },
+      interaction: {
+        zoomView: true,
+        zoomable: true,
+        zoomSpeed: 1.2,
+        dragView: true,
+        selectable: true,
+        navigationButtons: false,
+        multiselect: false
+      },
+      keyboard: {
+        zoom: true
+      },
+      nodes: {
+        font: {
+          face: 'Tajawal',
+          size: 14,
+          color: '#ffffff'
+        }
+      }
+    };
+    networkRef.current = new window.vis.Network(container, data, options);
+    const handleResize = () => {
+      if (networkRef.current) {
+        networkRef.current.redraw();
+        networkRef.current.fit();
+      }
+    };
+    window.addEventListener('resize', handleResize);
+    let resizeObserver = null;
+    if (container) {
+      resizeObserver = new ResizeObserver(() => networkRef.current?.redraw());
+      resizeObserver.observe(container);
+    }
+    const handleClick = params => {
+      if (params.nodes.length) {
+        const clickedId = params.nodes[0];
+        setSelectedNodeId(clickedId);
+        if (deleteModeRef.current) {
+          const clickedNode = nodesRef.current.get(clickedId);
+          if (clickedNode) {
+            saveState();
+            nodesRef.current.remove(clickedId);
+            const connectedEdges = edgesRef.current.get({
+              filter: item => item.from === clickedId || item.to === clickedId
+            });
+            connectedEdges.forEach(edge => edgesRef.current.remove(edge.id));
+            saveToLocalStorage();
+            cancelAction();
+            updateNodeStyles();
+            showNotification(`Nœud "${clickedNode.label}" supprimé`, 'warning');
+          }
+          return;
+        }
+        const clickedNode = nodesRef.current.get(clickedId);
+        if (clickedNode?.shape === 'box') {
+          setCurrentSection('section-person');
+          const titleEl = document.getElementById('person-title');
+          if (titleEl) titleEl.innerText = clickedNode.label;
+          setInputValue('current-person-id', clickedId);
+        } else if (clickedNode?.shape === 'dot') {
+          setCurrentSection('section-add-child');
+        }
+      } else cancelAction();
+    };
+    const handleDragEnd = params => {
+      if (params.nodes.length) {
+        const draggedId = params.nodes[0];
+        const positions = networkRef.current.getPositions();
+        if (positions[draggedId]) {
+          saveState();
+          nodesRef.current.update({
+            id: draggedId,
+            x: positions[draggedId].x,
+            y: positions[draggedId].y
+          });
+          saveToLocalStorage();
+        }
+      }
+    };
+    networkRef.current.on("click", handleClick);
+    networkRef.current.on("dragEnd", handleDragEnd);
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      if (resizeObserver) resizeObserver.disconnect();
+      networkRef.current?.destroy();
+    };
+  }, [libsReady, saveState, saveToLocalStorage, cancelAction, updateNodeStyles]);
+  if (!libsReady) return /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center justify-center h-screen bg-[#16161a] text-white font-sans"
+  }, "Chargement...");
+  const IconUndo = () => /*#__PURE__*/React.createElement("svg", {
+    xmlns: "http://www.w3.org/2000/svg",
+    width: "24",
+    height: "24",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "1.5",
+    strokeLinecap: "round",
+    strokeLinejoin: "round"
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M3 7v6h6"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"
+  }));
+  const IconRedo = () => /*#__PURE__*/React.createElement("svg", {
+    xmlns: "http://www.w3.org/2000/svg",
+    width: "24",
+    height: "24",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "1.5",
+    strokeLinecap: "round",
+    strokeLinejoin: "round"
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M21 7v6h-6"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13"
+  }));
+  const IconExport = () => /*#__PURE__*/React.createElement("svg", {
+    xmlns: "http://www.w3.org/2000/svg",
+    width: "24",
+    height: "24",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "1.5",
+    strokeLinecap: "round",
+    strokeLinejoin: "round"
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"
+  }), /*#__PURE__*/React.createElement("polyline", {
+    points: "7 10 12 15 17 10"
+  }), /*#__PURE__*/React.createElement("line", {
+    x1: "12",
+    y1: "15",
+    x2: "12",
+    y2: "3"
+  }));
+  const IconImport = () => /*#__PURE__*/React.createElement("svg", {
+    xmlns: "http://www.w3.org/2000/svg",
+    width: "24",
+    height: "24",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "1.5",
+    strokeLinecap: "round",
+    strokeLinejoin: "round"
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"
+  }), /*#__PURE__*/React.createElement("polyline", {
+    points: "17 8 12 3 7 8"
+  }), /*#__PURE__*/React.createElement("line", {
+    x1: "12",
+    y1: "3",
+    x2: "12",
+    y2: "15"
+  }));
+  const IconGenerate = () => /*#__PURE__*/React.createElement("svg", {
+    xmlns: "http://www.w3.org/2000/svg",
+    width: "24",
+    height: "24",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "1.5",
+    strokeLinecap: "round",
+    strokeLinejoin: "round"
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M15 3h6v6"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M21 3L12 12"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M15 9h6v6"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M9 15H3v6h6"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M3 21L12 12"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M9 9H3v6h6"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M15 15h6v6h-6z"
+  }));
+  return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("style", {
+    jsx: true
+  }, `
+        @import url('https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,300;14..32,400;14..32,500;14..32,600&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700&display=swap');
+        html, body, #root, .genograph-container, input, button, select, textarea, .vis-label {
+          font-family: 'Tajawal', 'Inter', sans-serif !important;
+        }
+        html, body, #root { height: 100%; margin: 0; padding: 0; }
+        body { overflow: hidden; background: #16161a; }
+        .graph-container { width: 100%; height: 100%; position: relative; }
+        .vis-network { touch-action: pan-x pan-y; width: 100%; height: 100%; }
+        .section-transition { transition: all 0.2s ease-in-out; }
+        select, select option { background-color: #1a1a1e !important; color: #e1e1e6 !important; }
+        select option:checked, select option:hover { background-color: #3b82f6 !important; color: white !important; }
+        .vis-network .vis-node[style*="selected"] .vis-label,
+        .vis-network .vis-node:focus .vis-label { filter: drop-shadow(0 0 8px #3b82f6); }
+        /* Toggle switch personnalisé */
+        .toggle-switch {
+          position: relative;
+          display: inline-flex;
+          align-items: center;
+          cursor: pointer;
+        }
+        .toggle-switch input {
+          opacity: 0;
+          width: 0;
+          height: 0;
+        }
+        .slider {
+          position: relative;
+          display: inline-block;
+          width: 44px;
+          height: 24px;
+          background-color: #3a3a42;
+          border-radius: 34px;
+          transition: 0.3s;
+          margin-right: 8px;
+        }
+        .slider:before {
+          position: absolute;
+          content: "";
+          height: 18px;
+          width: 18px;
+          left: 3px;
+          bottom: 3px;
+          background-color: white;
+          border-radius: 50%;
+          transition: 0.3s;
+        }
+        input:checked + .slider {
+          background-color: #3b82f6;
+        }
+        input:checked + .slider:before {
+          transform: translateX(20px);
+        }
+      `), /*#__PURE__*/React.createElement("div", {
+    className: "fixed inset-0 flex flex-row bg-[#16161a] font-sans overflow-hidden"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex-1 flex flex-col overflow-hidden relative"
+  }, /*#__PURE__*/React.createElement("div", {
+    ref: containerRef,
+    className: "flex-1 w-full graph-container bg-[radial-gradient(circle,#1f1f24_0.5px,transparent_0.5px)] bg-[length:20px_20px] opacity-80"
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "absolute top-5 left-1/2 transform -translate-x-1/2 z-20"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex gap-4 p-2 rounded-2xl bg-white/5 backdrop-blur-lg border border-white/10 shadow-2xl"
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: undo,
+    className: "w-[60px] h-[60px] rounded-2xl bg-white/5 hover:bg-white/10 text-white transition-all duration-200 flex items-center justify-center shadow-md hover:shadow-lg active:scale-95",
+    title: "Annuler la derni\xE8re action"
+  }, /*#__PURE__*/React.createElement(IconUndo, null)), /*#__PURE__*/React.createElement("button", {
+    onClick: redo,
+    className: "w-[60px] h-[60px] rounded-2xl bg-white/5 hover:bg-white/10 text-white transition-all duration-200 flex items-center justify-center shadow-md hover:shadow-lg active:scale-95",
+    title: "R\xE9tablir l'action annul\xE9e"
+  }, /*#__PURE__*/React.createElement(IconRedo, null)), /*#__PURE__*/React.createElement("button", {
+    onClick: exportToFile,
+    className: "w-[60px] h-[60px] rounded-2xl bg-white/5 hover:bg-white/10 text-white transition-all duration-200 flex items-center justify-center shadow-md hover:shadow-lg active:scale-95",
+    title: "Exporter le graphe en JSON"
+  }, /*#__PURE__*/React.createElement(IconExport, null)), /*#__PURE__*/React.createElement("button", {
+    onClick: () => fileInputRef.current?.click(),
+    className: "w-[60px] h-[60px] rounded-2xl bg-white/5 hover:bg-white/10 text-white transition-all duration-200 flex items-center justify-center shadow-md hover:shadow-lg active:scale-95",
+    title: "Importer un fichier JSON"
+  }, /*#__PURE__*/React.createElement(IconImport, null)), /*#__PURE__*/React.createElement("button", {
+    onClick: generateDemoData,
+    className: "w-[60px] h-[60px] rounded-2xl bg-white/5 hover:bg-white/10 text-white transition-all duration-200 flex items-center justify-center shadow-md hover:shadow-lg active:scale-95",
+    title: "G\xE9n\xE9rer un exemple de graphe"
+  }, /*#__PURE__*/React.createElement(IconGenerate, null)))), /*#__PURE__*/React.createElement("input", {
+    type: "file",
+    ref: fileInputRef,
+    accept: ".json",
+    className: "hidden",
+    onChange: importFromFile
+  }), deleteMode && /*#__PURE__*/React.createElement("div", {
+    className: "absolute top-5 right-5 z-20 animate-pulse"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center gap-2 px-4 py-2 rounded-full bg-red-500/90 backdrop-blur-sm text-white font-medium text-sm shadow-lg border border-red-300"
+  }, /*#__PURE__*/React.createElement("svg", {
+    xmlns: "http://www.w3.org/2000/svg",
+    width: "18",
+    height: "18",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "2"
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M3 6h18"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M8 4V2h8v2"
+  }), /*#__PURE__*/React.createElement("line", {
+    x1: "10",
+    y1: "11",
+    x2: "10",
+    y2: "17"
+  }), /*#__PURE__*/React.createElement("line", {
+    x1: "14",
+    y1: "11",
+    x2: "14",
+    y2: "17"
+  })), /*#__PURE__*/React.createElement("span", null, "Mode Gomme actif"))), /*#__PURE__*/React.createElement("footer", {
+    className: "absolute bottom-0 left-0 right-0 bg-[#16161a]/60 backdrop-blur-sm text-center py-2 text-xs text-[#6a6a72] border-t border-[#1c1c20] z-10"
+  }, "Made by Laiche Brahim 2026 Paris")), /*#__PURE__*/React.createElement("div", {
+    className: "w-80 bg-[#222227]/70 backdrop-blur-md border-l border-[#2e2e35] shadow-[-10px_0_25px_rgba(0,0,0,0.3)] p-5 flex flex-col overflow-y-auto z-10"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "section-transition space-y-5"
+  }, currentSection === 'section-default' && /*#__PURE__*/React.createElement("div", {
+    className: "space-y-4"
+  }, /*#__PURE__*/React.createElement("h2", {
+    className: "text-sm font-semibold text-[#e1e1e6] flex items-center gap-2 border-l-3 border-[#3b82f6] pl-2"
+  }, /*#__PURE__*/React.createElement("span", null, "\u2728"), " Initialiser"), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    className: "block text-xs font-medium text-[#a0a0aa] mb-1"
+  }, "Nom"), /*#__PURE__*/React.createElement("input", {
+    type: "text",
+    id: "init-name",
+    placeholder: "Laiche Brahim",
+    className: "w-full p-3 text-sm bg-[#1a1a1e] border-none rounded-xl text-[#e1e1e6] shadow-inner focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    className: "block text-xs font-medium text-[#a0a0aa] mb-1"
+  }, "Genre"), /*#__PURE__*/React.createElement("select", {
+    id: "init-gender",
+    className: "w-full p-3 text-sm bg-[#1a1a1e] border-none rounded-xl text-[#e1e1e6] focus:ring-2 focus:ring-blue-500/50"
+  }, /*#__PURE__*/React.createElement("option", {
+    value: "M"
+  }, "\uD83D\uDC68 Homme"), /*#__PURE__*/React.createElement("option", {
+    value: "F"
+  }, "\uD83D\uDC69 Femme"))), /*#__PURE__*/React.createElement("button", {
+    onClick: createRootPerson,
+    className: "w-full py-3 rounded-xl font-semibold bg-[#3b82f6] text-white text-sm active:scale-95 transition-transform flex items-center justify-center gap-2 shadow-md hover:bg-[#2563eb]"
+  }, /*#__PURE__*/React.createElement("svg", {
+    xmlns: "http://www.w3.org/2000/svg",
+    width: "16",
+    height: "16",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "2"
+  }, /*#__PURE__*/React.createElement("line", {
+    x1: "12",
+    y1: "5",
+    x2: "12",
+    y2: "19"
+  }), /*#__PURE__*/React.createElement("line", {
+    x1: "5",
+    y1: "12",
+    x2: "19",
+    y2: "12"
+  })), "Cr\xE9er"), /*#__PURE__*/React.createElement("p", {
+    className: "text-xs text-[#a0a0aa] text-center"
+  }, "\uD83D\uDC49 Cliquez sur une personne pour la modifier ou ajouter des liens")), currentSection === 'section-person' && /*#__PURE__*/React.createElement("div", {
+    className: "space-y-4"
+  }, /*#__PURE__*/React.createElement("h2", {
+    id: "person-title",
+    className: "text-sm font-semibold text-[#e1e1e6] flex items-center gap-2 border-l-3 border-[#3b82f6] pl-2"
+  }, /*#__PURE__*/React.createElement("span", null, "\uD83D\uDC64"), " Individu"), /*#__PURE__*/React.createElement("input", {
+    type: "hidden",
+    id: "current-person-id",
+    value: selectedNodeId || ''
+  }), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    className: "block text-xs font-medium text-[#a0a0aa] mb-1"
+  }, "Modifier nom"), /*#__PURE__*/React.createElement("input", {
+    type: "text",
+    id: "edit-person-name",
+    value: editingName,
+    onChange: e => {
+      setEditingName(e.target.value);
+      updatePersonNameLive(e.target.value);
+    },
+    className: "w-full p-3 text-sm bg-[#1a1a1e] border-none rounded-xl text-[#e1e1e6] focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "grid grid-cols-2 gap-3"
+  }, singleParentMode ? /*#__PURE__*/React.createElement("button", {
+    onClick: requestChildCreation,
+    className: "py-2 rounded-xl font-semibold bg-[#3b82f6] text-white text-sm flex items-center justify-center gap-1 active:scale-95 shadow-md"
+  }, /*#__PURE__*/React.createElement("svg", {
+    xmlns: "http://www.w3.org/2000/svg",
+    width: "16",
+    height: "16",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "2"
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M20 12V8H4v4M12 4v16M8 20h8"
+  }), /*#__PURE__*/React.createElement("circle", {
+    cx: "12",
+    cy: "12",
+    r: "2"
+  })), "Enfant") : /*#__PURE__*/React.createElement("button", {
+    onClick: prepareAddUnion,
+    className: "py-2 rounded-xl font-semibold bg-[#3b82f6] text-white text-sm flex items-center justify-center gap-1 active:scale-95 shadow-md"
+  }, /*#__PURE__*/React.createElement("svg", {
+    xmlns: "http://www.w3.org/2000/svg",
+    width: "16",
+    height: "16",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "2"
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M20 12V8H4v4M12 4v16M8 20h8"
+  }), /*#__PURE__*/React.createElement("circle", {
+    cx: "12",
+    cy: "12",
+    r: "2"
+  })), "Conjoint"), singleParentMode ? /*#__PURE__*/React.createElement("button", {
+    onClick: executeAddSingleParent,
+    className: "py-2 rounded-xl font-semibold bg-[#10b981] text-white text-sm flex items-center justify-center gap-1 active:scale-95 shadow-md"
+  }, /*#__PURE__*/React.createElement("svg", {
+    xmlns: "http://www.w3.org/2000/svg",
+    width: "16",
+    height: "16",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "2"
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"
+  }), /*#__PURE__*/React.createElement("circle", {
+    cx: "9",
+    cy: "7",
+    r: "4"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M23 21v-2a4 4 0 0 0-3-3.87"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M16 3.13a4 4 0 0 1 0 7.75"
+  })), "P\xE8re") : /*#__PURE__*/React.createElement("button", {
+    onClick: executeAddParents,
+    className: "py-2 rounded-xl font-semibold bg-[#10b981] text-white text-sm flex items-center justify-center gap-1 active:scale-95 shadow-md"
+  }, /*#__PURE__*/React.createElement("svg", {
+    xmlns: "http://www.w3.org/2000/svg",
+    width: "16",
+    height: "16",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "2"
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"
+  }), /*#__PURE__*/React.createElement("circle", {
+    cx: "9",
+    cy: "7",
+    r: "4"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M23 21v-2a4 4 0 0 0-3-3.87"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M16 3.13a4 4 0 0 1 0 7.75"
+  })), "Parents")), showChildGenderPicker && singleParentMode && /*#__PURE__*/React.createElement("div", {
+    className: "mt-3 p-3 rounded-xl bg-[#1a1a1e] border border-[#2e2e35] flex gap-3 justify-center"
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => createChildWithGender('M'),
+    className: "px-4 py-2 rounded-lg bg-[#1e3a8a] hover:bg-[#2563eb] text-white text-sm font-semibold transition-all active:scale-95 flex items-center gap-2"
+  }, /*#__PURE__*/React.createElement("svg", {
+    xmlns: "http://www.w3.org/2000/svg",
+    width: "16",
+    height: "16",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "2"
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M20 12V8H4v4M12 4v16M8 20h8"
+  }), /*#__PURE__*/React.createElement("circle", {
+    cx: "12",
+    cy: "12",
+    r: "2"
+  })), " Fils"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => createChildWithGender('F'),
+    className: "px-4 py-2 rounded-lg bg-[#701a75] hover:bg-[#9333ea] text-white text-sm font-semibold transition-all active:scale-95 flex items-center gap-2"
+  }, /*#__PURE__*/React.createElement("svg", {
+    xmlns: "http://www.w3.org/2000/svg",
+    width: "16",
+    height: "16",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "2"
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"
+  }), /*#__PURE__*/React.createElement("circle", {
+    cx: "9",
+    cy: "7",
+    r: "4"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M23 21v-2a4 4 0 0 0-3-3.87"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M16 3.13a4 4 0 0 1 0 7.75"
+  })), " Fille")), /*#__PURE__*/React.createElement("p", {
+    className: "text-xs text-[#a0a0aa] text-center"
+  }, "\uD83D\uDCA1 Cliquez sur un n\u0153ud vert pour ajouter un enfant")), currentSection === 'section-add-union' && /*#__PURE__*/React.createElement("div", {
+    className: "space-y-4"
+  }, /*#__PURE__*/React.createElement("h2", {
+    className: "text-sm font-semibold text-[#e1e1e6] flex items-center gap-2 border-l-3 border-[#10b981] pl-2"
+  }, /*#__PURE__*/React.createElement("span", null, "\uD83D\uDC8D"), " Nouvelle Union"), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    className: "block text-xs font-medium text-[#a0a0aa] mb-1"
+  }, "Nom conjoint"), /*#__PURE__*/React.createElement("input", {
+    type: "text",
+    id: "spouse-name",
+    className: "w-full p-3 text-sm bg-[#1a1a1e] border-none rounded-xl focus:ring-2 focus:ring-blue-500/50"
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    className: "block text-xs font-medium text-[#a0a0aa] mb-1"
+  }, "Genre"), /*#__PURE__*/React.createElement("select", {
+    id: "spouse-gender",
+    className: "w-full p-3 text-sm bg-[#1a1a1e] border-none rounded-xl focus:ring-2 focus:ring-blue-500/50"
+  }, /*#__PURE__*/React.createElement("option", {
+    value: "F"
+  }, "\uD83D\uDC69 Femme"), /*#__PURE__*/React.createElement("option", {
+    value: "M"
+  }, "\uD83D\uDC68 Homme"))), /*#__PURE__*/React.createElement("div", {
+    className: "grid gap-2"
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: executeAddUnion,
+    className: "py-2 rounded-xl bg-[#10b981] text-white text-sm flex items-center justify-center gap-1 active:scale-95"
+  }, "\u2705 Cr\xE9er"), /*#__PURE__*/React.createElement("button", {
+    onClick: cancelAction,
+    className: "py-2 rounded-xl bg-[#222227] text-[#e1e1e6] text-sm active:scale-95"
+  }, "Annuler"))), currentSection === 'section-add-child' && /*#__PURE__*/React.createElement("div", {
+    className: "space-y-4"
+  }, /*#__PURE__*/React.createElement("h2", {
+    className: "text-sm font-semibold text-[#e1e1e6] flex items-center gap-2 border-l-3 border-[#ec4899] pl-2"
+  }, /*#__PURE__*/React.createElement("span", null, "\uD83D\uDC76"), " Ajouter enfant"), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    className: "block text-xs font-medium text-[#a0a0aa] mb-1"
+  }, "Nom"), /*#__PURE__*/React.createElement("input", {
+    type: "text",
+    id: "child-name",
+    className: "w-full p-3 text-sm bg-[#1a1a1e] border-none rounded-xl focus:ring-2 focus:ring-blue-500/50"
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    className: "block text-xs font-medium text-[#a0a0aa] mb-1"
+  }, "Genre"), /*#__PURE__*/React.createElement("select", {
+    id: "child-gender",
+    className: "w-full p-3 text-sm bg-[#1a1a1e] border-none rounded-xl focus:ring-2 focus:ring-blue-500/50"
+  }, /*#__PURE__*/React.createElement("option", {
+    value: "M"
+  }, "\uD83D\uDC68 Gar\xE7on"), /*#__PURE__*/React.createElement("option", {
+    value: "F"
+  }, "\uD83D\uDC69 Fille"))), /*#__PURE__*/React.createElement("div", {
+    className: "grid gap-2"
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: executeAddChild,
+    className: "py-2 rounded-xl bg-[#3b82f6] text-white text-sm flex items-center justify-center gap-1 active:scale-95"
+  }, "\u2795 Ajouter"), /*#__PURE__*/React.createElement("button", {
+    onClick: cancelAction,
+    className: "py-2 rounded-xl bg-[#222227] text-[#e1e1e6] text-sm active:scale-95"
+  }, "Annuler"))), currentSection === 'section-idle' && /*#__PURE__*/React.createElement("div", {
+    className: "text-center py-10"
+  }, /*#__PURE__*/React.createElement("p", {
+    className: "text-[#a0a0aa] text-sm"
+  }, "\uD83D\uDC46 Cliquez une personne"), /*#__PURE__*/React.createElement("p", {
+    className: "text-[#a0a0aa] text-xs mt-2"
+  }, "Utilisez le menu ci-dessous pour cr\xE9er des liens"))), /*#__PURE__*/React.createElement("div", {
+    className: "mt-6 pt-2 border-t border-[#2e2e35]"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center justify-between"
+  }, /*#__PURE__*/React.createElement("label", {
+    className: "text-xs text-[#a0a0aa] flex items-center gap-1 cursor-pointer",
+    title: "Activez pour ajouter directement un p\xE8re ou un enfant sans union"
+  }, /*#__PURE__*/React.createElement("svg", {
+    xmlns: "http://www.w3.org/2000/svg",
+    width: "14",
+    height: "14",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "2"
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M20 12V8H4v4M12 4v16M8 20h8"
+  }), /*#__PURE__*/React.createElement("circle", {
+    cx: "12",
+    cy: "12",
+    r: "2"
+  })), "Mode P\xE8re Seul"), /*#__PURE__*/React.createElement("label", {
+    className: "toggle-switch"
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "checkbox",
+    checked: singleParentMode,
+    onChange: toggleSingleParentMode
+  }), /*#__PURE__*/React.createElement("span", {
+    className: "slider"
+  }))), /*#__PURE__*/React.createElement("p", {
+    className: "text-[10px] text-[#6a6a72] mt-1"
+  }, singleParentMode ? '✅ Actif : ajout direct d\'un père ou d\'un enfant (choix Fils/Fille)' : '⭕ Inactif : ajout avec union (conjoint) ou parents complets')), /*#__PURE__*/React.createElement("div", {
+    className: "mt-4 pt-2 border-t border-[#2e2e35]"
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: clearAll,
+    className: "w-full py-3 rounded-xl border border-[#3a3a42] bg-[#1e1e24] hover:bg-[#2a2a32] text-[#e1e1e6] text-sm font-medium transition-all duration-200 active:scale-95 flex items-center justify-center gap-2",
+    title: "Effacer tout le graphe (confirmation)"
+  }, /*#__PURE__*/React.createElement("svg", {
+    xmlns: "http://www.w3.org/2000/svg",
+    width: "16",
+    height: "16",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "2"
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M3 6h18"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M8 4V2h8v2"
+  }), /*#__PURE__*/React.createElement("line", {
+    x1: "10",
+    y1: "11",
+    x2: "10",
+    y2: "17"
+  }), /*#__PURE__*/React.createElement("line", {
+    x1: "14",
+    y1: "11",
+    x2: "14",
+    y2: "17"
+  })), "Reset (tout effacer)")), /*#__PURE__*/React.createElement("div", {
+    className: "mt-6 pt-4 border-t border-[#2e2e35]"
+  }, /*#__PURE__*/React.createElement("button", {
+    id: "btn-gomme",
+    onClick: toggleDeleteMode,
+    className: "w-full py-3 rounded-xl font-semibold text-white transition-all duration-200 active:scale-95 flex items-center justify-center gap-2 text-sm shadow-md",
+    style: {
+      background: deleteMode ? '#ef4444' : '#3b82f6'
+    },
+    title: "Cliquez sur une personne ou une union pour la supprimer"
+  }, /*#__PURE__*/React.createElement("svg", {
+    xmlns: "http://www.w3.org/2000/svg",
+    width: "18",
+    height: "18",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "2"
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M3 6h18"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M8 4V2h8v2"
+  }), /*#__PURE__*/React.createElement("line", {
+    x1: "10",
+    y1: "11",
+    x2: "10",
+    y2: "17"
+  }), /*#__PURE__*/React.createElement("line", {
+    x1: "14",
+    y1: "11",
+    x2: "14",
+    y2: "17"
+  })), deleteMode ? 'Désactiver Gomme' : 'Activer Gomme')), /*#__PURE__*/React.createElement("div", {
+    className: "mt-auto pt-6 flex flex-col items-center text-center"
+  }, /*#__PURE__*/React.createElement("img", {
+    src: "https://i.ibb.co/svJG1ZQk/signature.png",
+    alt: "signature",
+    className: "w-10 h-auto opacity-70 hover:opacity-100 transition-opacity mb-1"
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "text-[9px] text-[#4a4a52]"
+  }, "Made by Laiche Brahim 2026 Paris")))), notification.show && /*#__PURE__*/React.createElement("div", {
+    className: `fixed bottom-5 left-1/2 transform -translate-x-1/2 z-50 px-4 py-2 rounded-lg shadow-lg text-sm font-medium transition-all duration-300 ${notification.type === 'success' ? 'bg-green-600 text-white' : notification.type === 'warning' ? 'bg-orange-600 text-white' : 'bg-blue-600 text-white'}`
+  }, notification.message));
+};
+window.reactRoot = window.reactRoot || ReactDOM.createRoot(document.getElementById('root'));
+window.reactRoot.render(/*#__PURE__*/React.createElement(GenoGraph, null));
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(/*#__PURE__*/React.createElement(GenoGraph, null));</script><script>if('serviceWorker'in navigator)navigator.serviceWorker.register('sw.js');</script></body></html>
